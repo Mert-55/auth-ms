@@ -2,7 +2,7 @@
 ## Authentication
 - To authenticate requests, the `Authorization` header must contain a valid access token (JWT which contains the user's
   ID and the session ID).
-- The access token can be obtained by logging in to an exising account (see `POST /sessions` and `POST /sessions/oauth`)
+- The access token can be obtained by logging in to an exising account (see `POST /sessions`)
   or by creating an account (see `POST /users`). This access token is only valid for a short period of time
   (usually 5 minutes).
 - If the access token is expired, a new access token can be obtained by using the refresh token (see `PUT /session`)
@@ -31,41 +31,35 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from settings import settings
+from .settings import settings
 
-"""
-from . import __version__
 from .database import db, db_context
-from .endpoints import ROUTER, TAGS
-from .logger import get_logger, setup_sentry
+from . import __version__
 from .models import User
 from .models.session import clean_expired_sessions
 from .utils.debug import check_responses
+
+from .endpoints import ROUTER, TAGS
 from .utils.docs import add_endpoint_links_to_openapi_docs
-"""
+
 
 T = TypeVar("T")
-
 app = FastAPI(
-    title="Bootstrap Academy Backend: Auth Microservice",
+    title="Backend: Auth Microservice",
     description=__doc__,
-    # version=__version__,
+    version=__version__,
     root_path=settings.root_path,
     root_path_in_servers=False,
     servers=[{"url": settings.root_path}] if settings.root_path else None,
-    # openapi_tags=TAGS,
+    openapi_tags=TAGS,
 )
-# app.include_router(ROUTER)
+app.include_router(ROUTER)
 
-# if settings.debug:
-#    app.middleware("http")(check_responses)
+if settings.debug:
+    app.middleware("http")(check_responses)
 
 
-# add_endpoint_links_to_openapi_docs(app.openapi())
-
-# if settings.sentry_dsn:
-#     logger.debug("initializing sentry")
-#     setup_sentry(app, settings.sentry_dsn, "auth-ms", __version__)
+add_endpoint_links_to_openapi_docs(app.openapi())
 
 if settings.debug:
     app.add_middleware(
@@ -77,33 +71,33 @@ if settings.debug:
     )
 
 
-# @app.middleware("http")
-# async def db_session(request: Request, call_next: Callable[..., Awaitable[T]]) -> T:
-#     async with db_context():
-#         return await call_next(request)
+@app.middleware("http")
+async def db_session(request: Request, call_next: Callable[..., Awaitable[T]]) -> T:
+    async with db_context():
+        return await call_next(request)
 
 
-# @app.exception_handler(StarletteHTTPException)
-# async def rollback_on_exception(request: Request, exc: HTTPException) -> Response:
-#     await db.session.rollback()
-#     return await http_exception_handler(request, exc)
+@app.exception_handler(StarletteHTTPException)
+async def rollback_on_exception(request: Request, exc: HTTPException) -> Response:
+    await db.session.rollback()
+    return await http_exception_handler(request, exc)
 
 
-# async def clean_expired_sessions_loop() -> None:
-#     while True:
-#         try:
-#             await clean_expired_sessions()
-#         except Exception as e:
-#             logger.exception(e)
-#         await asyncio.sleep(20 * 60)
-#
-#
-# @app.on_event("startup")
-# async def on_startup() -> None:
-#     asyncio.create_task(clean_expired_sessions_loop())
-#
-#     async with db_context():
-#         await User.initialize()
+async def clean_expired_sessions_loop() -> None:
+    while True:
+        try:
+            await clean_expired_sessions()
+        except Exception as e:
+            print(e)
+        await asyncio.sleep(20 * 60)
+
+
+@app.on_event("startup")
+async def on_startup() -> None:
+    asyncio.create_task(clean_expired_sessions_loop())
+
+    async with db_context():
+        await User.initialize()
 
 
 @app.on_event("shutdown")
@@ -114,13 +108,3 @@ async def on_shutdown() -> None:
 @app.head("/status", include_in_schema=False)
 async def status() -> None:
     pass
-
-
-@app.get("/")
-async def root():
-    return {"message": "Hello World"}
-
-
-@app.get("/hello/{name}")
-async def say_hello(name: str):
-    return {"message": f"Hello {name}"}

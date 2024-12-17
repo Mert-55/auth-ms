@@ -47,8 +47,6 @@ class Settings(BaseSettings):
 
     jwt_secret: str = secrets.token_urlsafe(64)
 
-    shop_url: str = ""
-
     internal_jwt_ttl: int = 10
 
     access_token_ttl: int = 300
@@ -92,7 +90,7 @@ class Settings(BaseSettings):
     max_overflow: int = 20
     sql_show_statements: bool = False
 
-    redis_url: str = Field("redis://redis:6379/0", pattern=r"^redis://.*$")
+    redis_url: str = Field("redis://localhost:6379/0", pattern=r"^redis://.*$")
 
     # sentry_dsn: str | None = None # Powerful logging / debugging tool
     # sentry_environment: str = "test"

@@ -1,0 +1,271 @@
+from __future__ import annotations
+
+import hashlib
+import json
+from datetime import datetime
+from typing import TYPE_CHECKING, Any, cast, ClassVar
+from uuid import uuid4
+
+from sqlalchemy import Boolean, Column, String, func, or_
+from sqlalchemy.orm import Mapped, relationship
+from sqlalchemy.sql import Select
+
+from ..database import Base, db, select
+from ..database.database import UTCDateTime
+from api.redis_client import redis
+from ..services.gravatar import get_gravatar_url
+from ..settings import settings
+from ..utils.email import (
+    RESET_PASSWORD,
+    VERIFY_EMAIL,
+    check_email_deliverability,
+    generate_verification_code,
+)
+from ..utils.jwt import decode_jwt
+from ..utils.passwords import hash_password, verify_password
+from ..utils.utc import utcnow
+
+
+if TYPE_CHECKING:
+    from .session import Session
+
+
+class User(Base):
+    __tablename__ = "auth_user"
+    __allow_unmapped__ = True
+
+    id: Mapped[str] = Column(String(36), primary_key=True, unique=True)
+    name: Mapped[str] = Column(String(32), unique=True)
+    display_name: Mapped[str] = Column(String(64))
+    email: Mapped[str | None] = Column(String(254), unique=True)
+    email_verification_code: Mapped[str | None] = Column(
+        String(32), nullable=True, unique=True
+    )
+    password: Mapped[str | None] = Column(String(128), nullable=True)
+    registration: Mapped[datetime] = Column(UTCDateTime)
+    last_login: Mapped[datetime | None] = Column(UTCDateTime, nullable=True)
+    last_name_change: Mapped[datetime] = Column(UTCDateTime)
+    enabled: Mapped[bool] = Column(Boolean, default=True)
+    admin: Mapped[bool] = Column(Boolean, default=False)
+    description: Mapped[str | None] = Column(String(1024), nullable=True)
+    _tags: Mapped[str] = Column(String(550))
+    first_name: Mapped[str | None] = Column(String(128), nullable=True)
+    last_name: Mapped[str | None] = Column(String(128), nullable=True)
+    street: Mapped[str | None] = Column(String(256), nullable=True)
+    zip_code: Mapped[str | None] = Column(String(16), nullable=True)
+    city: Mapped[str | None] = Column(String(64), nullable=True)
+    country: Mapped[str | None] = Column(String(64), nullable=True)
+    sessions: ClassVar[list[Session]] = relationship(
+        "Session", back_populates="user", cascade="all, delete"
+    )
+
+    @property
+    def tags(self) -> list[str]:
+        return cast(list[str], json.loads(self._tags)) if self._tags else []
+
+    @tags.setter
+    def tags(self, value: list[str]) -> None:
+        self._tags = json.dumps(value)
+
+    @property
+    def email_verified(self) -> bool:
+        return self.email is not None and self.email_verification_code is None
+
+    @email_verified.setter
+    def email_verified(self, value: bool) -> None:
+        if value:
+            self.email_verification_code = None
+        else:
+            self.email_verification_code = generate_verification_code()
+
+    @property
+    def serialize(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "name": self.name,
+            "display_name": self.display_name,
+            "email": self.email,
+            "email_verified": self.email_verified,
+            "registration": self.registration.timestamp(),
+            "last_login": self.last_login.timestamp() if self.last_login else None,
+            "last_name_change": self.last_name_change.timestamp(),
+            "enabled": self.enabled,
+            "admin": self.admin,
+            "password": bool(self.password),
+            "description": self.description,
+            "tags": self.tags,
+            "first_name": self.first_name,
+            "last_name": self.last_name,
+            "street": self.street,
+            "zip_code": self.zip_code,
+            "city": self.city,
+            "country": self.country,
+            "avatar_url": get_gravatar_url(self.email) if self.email else None,
+        }
+
+    @property
+    def jwt_data(self) -> dict[str, Any]:
+        return {"email_verified": self.email_verified, "admin": self.admin}
+
+    async def invalidate_access_tokens(self) -> None:
+        for session in self.sessions:
+            await session.invalidate_access_token()
+
+    @staticmethod
+    async def create(
+        name: str,
+        display_name: str,
+        email: str,
+        password: str | None,
+        enabled: bool,
+        admin: bool,
+    ) -> User:
+        user = User(
+            id=str(uuid4()),
+            name=name,
+            display_name=display_name,
+            email=email,
+            email_verification_code=generate_verification_code(),
+            password=await hash_password(password) if password else None,
+            registration=utcnow(),
+            last_login=None,
+            last_name_change=utcnow(),
+            enabled=enabled,
+            admin=admin,
+            description=None,
+        )
+        user.tags = []
+        await db.add(user)
+        return user
+
+    @staticmethod
+    def filter_by_name(name: str) -> Select:
+        return select(User).where(func.lower(User.name) == name.lower())
+
+    @staticmethod
+    def filter_by_email(email: str) -> Select:
+        return select(User).where(func.lower(User.email) == email.lower())
+
+    @staticmethod
+    def filter_by_verification_code(code: str, *args: Any) -> Select:
+        return select(User, *args).where(
+            func.lower(User.email_verification_code) == code.lower()
+        )
+
+    @staticmethod
+    def login_filter(name_or_email: str) -> Select:
+        return select(User).where(
+            or_(
+                func.lower(User.name) == name_or_email.lower(),
+                func.lower(User.email) == name_or_email.lower(),
+            )
+        )
+
+    @staticmethod
+    async def initialize() -> None:
+        if await db.exists(select(User)):
+            return
+
+        user = await User.create(
+            settings.admin_username,
+            settings.admin_username,
+            settings.admin_email,
+            settings.admin_password,
+            True,
+            True,
+        )
+        user.email_verified = True
+        print(f"Admin user '{user.name}' ({user.email}) has been created!")
+        if not await check_email_deliverability(user.email):
+            print(f"Cannot send emails to '{user.email}'!")
+
+    async def check_password(self, password: str) -> bool:
+        if not self.password:
+            return False
+
+        return await verify_password(password, self.password)
+
+    async def change_password(self, password: str | None) -> None:
+        self.password = await hash_password(password) if password else None
+
+    async def create_session(self, device_name: str) -> tuple[Session, str, str]:
+        from .session import Session
+
+        self.last_login = utcnow()
+        return await Session.create(self, device_name)
+
+    @staticmethod
+    async def from_access_token(access_token: str) -> User | None:
+        if (data := decode_jwt(access_token, require=["uid", "sid", "rt"])) is None:
+            return None
+        if await redis.exists(f"session_logout:{data['rt']}"):
+            return None
+
+        return await db.get(User, id=data["uid"], enabled=True)
+
+    async def logout(self) -> None:
+        for session in self.sessions:
+            await session.logout()
+
+    async def send_verification_email(self) -> None:
+        if not self.email:
+            raise ValueError("User has no email")
+        if not self.email_verification_code:
+            raise ValueError("User already verified")
+
+        await VERIFY_EMAIL.send(
+            self.email,
+            code=self.email_verification_code,
+            url=settings.frontend_base_url.rstrip("/") + "/auth/verify-account",
+        )
+
+    async def send_password_reset_email(self) -> None:
+        if not self.email:
+            raise ValueError("User has no email")
+
+        code = generate_verification_code()
+        await redis.setex(f"password_reset:{self.id}", 3600, code)
+        await RESET_PASSWORD.send(
+            self.email,
+            code=code,
+            url=settings.frontend_base_url.rstrip("/") + "/auth/reset-password",
+        )
+
+    async def check_password_reset_code(self, code: str) -> bool:
+        value: str | None = await redis.get(key := f"password_reset:{self.id}")
+        if not value or code.lower() != value.lower():
+            return False
+
+        await redis.delete(key)
+        return True
+
+    @staticmethod
+    async def get_failed_logins(name_or_email: str) -> int:
+        return int(
+            await redis.get(
+                f"failed_login_attempts:{hashlib.sha256(name_or_email.lower().encode()).hexdigest()}"
+            )
+            or "0"
+        )
+
+    @staticmethod
+    async def incr_failed_logins_anon(name_or_email: str) -> None:
+        await redis.incr(
+            f"failed_login_attempts:{hashlib.sha256(name_or_email.lower().encode()).hexdigest()}"
+        )
+
+    async def incr_failed_logins(self) -> None:
+        async with redis.pipeline() as pipe:
+            for key in [self.name, self.email] if self.email else [self.name]:
+                await pipe.incr(
+                    f"failed_login_attempts:{hashlib.sha256(key.lower().encode()).hexdigest()}"
+                )
+            await pipe.execute()
+
+    async def reset_failed_logins(self) -> None:
+        await redis.delete(
+            *[
+                f"failed_login_attempts:{hashlib.sha256(key.lower().encode()).hexdigest()}"
+                for key in ([self.name, self.email] if self.email else [self.name])
+            ]
+        )

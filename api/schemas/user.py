@@ -1,0 +1,129 @@
+from pydantic import BaseModel, EmailStr, Field, ConfigDict, constr
+
+from ..utils.docs import example, get_example
+
+
+USERNAME_REGEX = r"^[a-zA-Z\d]{3,32}$"
+PASSWORD_REGEX = r"^((?=.*[a-z])(?=.*[A-Z])(?=.*\d).{8,})?$"  # r"^((?=.*[a-z])(?=.*[A-Z])(?=.*\d).{8,})?$"  # noqa: S105
+VERIFICATION_CODE_REGEX = r"^([a-zA-Z\d]{4}-){3}[a-zA-Z\d]{4}$"
+
+
+class User(BaseModel):
+    id: str = Field(description="Unique identifier for the user")
+    name: str = Field(description="Unique username")
+    display_name: str = Field(description="Full name of the user")
+    email: str | None = Field(description="Email address of the user")
+    email_verified: bool = Field(
+        description="Whether the user has verified their email address"
+    )
+    registration: float = Field(description="Timestamp of the user's registration")
+    last_login: float | None = Field(
+        description="Timestamp of the user's last successful login"
+    )
+    last_name_change: float = Field(
+        description="Timestamp of the user's last name change"
+    )
+    enabled: bool = Field(description="Whether the user is enabled")
+    admin: bool = Field(description="Whether the user is an administrator")
+    password: bool = Field(
+        description="Whether the user has a password (if not, login is only possible via OAuth)"
+    )
+    description: str | None = Field(description="Description of the user")
+    tags: list[str] = Field(description="Tags for the user")
+    first_name: str | None = Field(description="First name of the user")
+    last_name: str | None = Field(description="Last name of the user")
+    street: str | None = Field(description="Street of the user address")
+    zip_code: str | None = Field(description="Zip code of the user address")
+    city: str | None = Field(description="City of the user address")
+    country: str | None = Field(description="Country of the user")
+    avatar_url: str | None = Field(description="URL of the user's avatar")
+
+    model_config = ConfigDict(
+        **example(
+            id="a13e63b1-9830-4604-8b7f-397d2c29955e",
+            name="user42",
+            display_name="User 42",
+            email="user42@example.com",
+            email_verified=True,
+            registration=1615725447.182818,
+            last_login=1615735459.274742,
+            last_name_change=1615725447.182818,
+            enabled=True,
+            admin=False,
+            password=True,
+            description="This is a test user",
+            tags=["test", "foo", "bar"],
+            avatar_url=None,
+        )
+    )
+
+
+class UsersResponse(BaseModel):
+    total: int = Field(description="Total number of users matching the query")
+    users: list[User] = Field(description="Paginated list of users matching the query")
+
+    model_config = ConfigDict(**example(total=1, users=[get_example(User)]))
+
+
+class CreateUser(BaseModel):
+    name: str = Field(pattern=USERNAME_REGEX, description="Unique username")
+    display_name: str = Field(
+        ..., min_length=3, max_length=64, description="Full name of the user"
+    )
+    email: EmailStr = Field(..., description="Email address of the user")
+    password: str | None = Field(
+        # pattern=PASSWORD_REGEX,
+        description="Password of the user"
+    )
+    enabled: bool = Field(True, description="Whether the user is enabled")
+    admin: bool = Field(False, description="Whether the user is an administrator")
+
+
+class UpdateUser(BaseModel):
+    name: str | None = Field(pattern=USERNAME_REGEX, description="Change the username")
+    display_name: str | None = Field(
+        None, min_length=3, max_length=64, description="Change the user's full name"
+    )
+    email: EmailStr | None = Field(None, description="Change the user's email address")
+    email_verified: bool | None = Field(
+        None, description="Change whether the user's email address is verified"
+    )
+    password: str | None = Field(
+        # pattern=PASSWORD_REGEX,
+        description="Change the password (if set to the empty string, the password is removed)",
+    )
+    enabled: bool | None = Field(description="Change whether the user is enabled")
+    admin: bool | None = Field(
+        description="Change whether the user is an administrator"
+    )
+    description: str | None = Field(
+        max_length=1024, description="Change the user's description"
+    )
+    tags: list[str] | None = Field(
+        max_length=64, description="Change the user's tags"
+    )  # max_items=8
+    first_name: str | None = Field(max_length=128, description="First name of the user")
+    last_name: str | None = Field(max_length=128, description="Last name of the user")
+    street: str | None = Field(max_length=256, description="Street of the user address")
+    zip_code: str | None = Field(
+        max_length=16, description="Zip code of the user address"
+    )
+    city: str | None = Field(max_length=64, description="City of the user address")
+    country: str | None = Field(max_length=64, description="Country of the user")
+
+
+class RequestPasswordReset(BaseModel):
+    email: EmailStr = Field(
+        description="The email address of the user to reset the password for"
+    )
+
+
+class ResetPassword(BaseModel):
+    email: EmailStr = Field(description="Email address of the user")
+    code: str = Field(
+        pattern=VERIFICATION_CODE_REGEX, description="Password reset code"
+    )
+    password: str = Field(
+        # pattern=PASSWORD_REGEX,
+        description="New password for the user"
+    )
