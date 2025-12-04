@@ -163,7 +163,15 @@ def apply_profile_updates(user: models.User, **fields: str | None) -> None:
         user: User model instance to update
         **fields: Field names and values to update
     """
+    # Define allowed profile fields to prevent silent failures
+    allowed_fields = {
+        'description', 'tags', 'first_name', 'last_name',
+        'street', 'zip_code', 'city', 'country'
+    }
+    
     for field_name, value in fields.items():
+        if field_name not in allowed_fields:
+            continue  # Silently skip unknown fields for forward compatibility
         if value is not None and getattr(user, field_name, None) != value:
             setattr(user, field_name, value)
 
