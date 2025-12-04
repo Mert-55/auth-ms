@@ -172,7 +172,7 @@ def apply_profile_updates(user: models.User, **fields: str | None) -> None:
     for field_name, value in fields.items():
         if field_name not in allowed_fields:
             continue  # Silently skip unknown fields for forward compatibility
-        if value is not None and getattr(user, field_name, None) != value:
+        if value is not None and getattr(user, field_name) != value:
             setattr(user, field_name, value)
 
 
