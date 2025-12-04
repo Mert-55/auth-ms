@@ -1,7 +1,6 @@
 """Endpoints for user management"""
 
 import hashlib
-from datetime import timedelta
 from typing import Any
 
 from fastapi import APIRouter, Body, Query, Request
@@ -37,7 +36,7 @@ from ..schemas.user import (
 )
 from ..settings import settings
 from ..utils.email import check_email_deliverability
-from ..utils.utc import utcnow
+from . import user_logic
 
 
 router = APIRouter()
@@ -157,17 +156,11 @@ async def create_user(
 
     if not data.password:
         raise NoLoginMethodError
-    if not admin:
-        if data.password and not settings.open_registration:
-            raise RegistrationDisabledError
+    
+    if not admin and data.password and not settings.open_registration:
+        raise RegistrationDisabledError
 
-        if not await check_email_deliverability(data.email):
-            raise InvalidEmailError
-
-    if await db.exists(models.User.filter_by_name(data.name)):
-        raise UserAlreadyExistsError
-    if await db.exists(models.User.filter_by_email(data.email)):
-        raise EmailAlreadyExistsError
+    await user_logic.validate_user_creation(data.name, data.email, admin)
 
     user = await models.User.create(
         data.name,
@@ -223,84 +216,53 @@ async def update_user(
     - The admin status cannot be changed.
     """
 
+    # Handle name change
     if data.name is not None and data.name != user.name:
-        now = utcnow()
-        if not admin and now - user.last_name_change < timedelta(
-            days=settings.min_name_change_interval
-        ):
-            raise PermissionDeniedError
-        if await db.exists(
-            models.User.filter_by_name(data.name).where(models.User.id != user.id)
-        ):
-            raise UserAlreadyExistsError
+        await user_logic.validate_name_change(user, data.name, admin)
+        await user_logic.apply_name_change(user, data.name, admin)
 
-        user.name = data.name
-        if not admin:
-            user.last_name_change = now
-
+    # Handle display name change
     if data.display_name is not None and data.display_name != user.display_name:
         user.display_name = data.display_name
 
+    # Handle email change
     if data.email is not None and data.email != user.email:
-        if await db.exists(
-            models.User.filter_by_email(data.email).where(models.User.id != user.id)
-        ):
-            raise EmailAlreadyExistsError
-        if not admin and not await check_email_deliverability(data.email):
-            raise InvalidEmailError
+        await user_logic.validate_email_change(user, data.email, admin)
+        await user_logic.apply_email_change(user, data.email)
 
-        user.email = data.email
-        user.email_verified = False
-        await user.invalidate_access_tokens()
-
+    # Handle email verification status change (admin only)
     if data.email_verified is not None and data.email_verified != user.email_verified:
         if not admin:
             raise PermissionDeniedError
-
         user.email_verified = data.email_verified
         await user.invalidate_access_tokens()
 
+    # Handle password change
     if data.password is not None:
-        await user.change_password(data.password)
+        await user_logic.apply_password_change(user, data.password)
 
+    # Handle enabled status change
     if data.enabled is not None and data.enabled != user.enabled:
-        if user.id == session.user_id:
-            raise PermissionDeniedError
+        await user_logic.validate_enable_change(user, session)
+        await user_logic.apply_enable_change(user, data.enabled)
 
-        user.enabled = data.enabled
-        if not user.enabled:
-            await user.logout()
-
+    # Handle admin status change
     if data.admin is not None and data.admin != user.admin:
-        if user.id == session.user_id:
-            raise PermissionDeniedError
+        await user_logic.validate_admin_change(user, session)
+        await user_logic.apply_admin_change(user, data.admin)
 
-        user.admin = data.admin
-        await user.invalidate_access_tokens()
-
-    if data.description is not None and data.description != user.description:
-        user.description = data.description
-
-    if data.tags is not None and data.tags != user.tags:
-        user.tags = data.tags
-
-    if data.first_name is not None and data.first_name != user.first_name:
-        user.first_name = data.first_name
-
-    if data.last_name is not None and data.last_name != user.last_name:
-        user.last_name = data.last_name
-
-    if data.street is not None and data.street != user.street:
-        user.street = data.street
-
-    if data.zip_code is not None and data.zip_code != user.zip_code:
-        user.zip_code = data.zip_code
-
-    if data.city is not None and data.city != user.city:
-        user.city = data.city
-
-    if data.country is not None and data.country != user.country:
-        user.country = data.country
+    # Handle profile field updates
+    user_logic.apply_profile_updates(
+        user,
+        description=data.description,
+        tags=data.tags,
+        first_name=data.first_name,
+        last_name=data.last_name,
+        street=data.street,
+        zip_code=data.zip_code,
+        city=data.city,
+        country=data.country,
+    )
 
     return user.serialize
 
