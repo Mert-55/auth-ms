@@ -35,7 +35,6 @@ from ..schemas.user import (
     UsersResponse,
 )
 from ..settings import settings
-from ..utils.email import check_email_deliverability
 from . import user_logic
 
 
